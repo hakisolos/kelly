@@ -1,51 +1,186 @@
 // app/auth.tsx
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import * as SecureStore from "expo-secure-store";
 import React, { useEffect, useState } from "react";
 import {
-    ScrollView,
-    StatusBar,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity
+  ActivityIndicator,
+  Alert,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
 } from "react-native";
+
+// Update this to your actual backend URL
+// For Android emulator, use: http://10.0.2.2:3001
+// For iOS simulator, use: http://localhost:3001
+// For physical device, use your computer's IP address: http://192.168.x.x:3001
+const API_BASE_URL = "http://10.132.94.222:3001";
 
 const AuthScreen = () => {
   const router = useRouter();
   const params = useLocalSearchParams();
-  
+
   const [isSignup, setIsSignup] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
 
   // Set initial mode based on route params
   useEffect(() => {
     if (params.mode) {
-      setIsSignup(params.mode === 'signup');
+      setIsSignup(params.mode === "signup");
     }
   }, [params.mode]);
 
-  const handleAuth = () => {
-    if (isSignup) {
-      console.log("Signing up with:", email, password);
-      // Add your signup logic here
-      // After successful signup, navigate to home/main screen
-      // router.push('/home');
-    } else {
-      console.log("Logging in with:", email, password);
-      // Add your login logic here
-      // After successful login, navigate to home/main screen
-      // router.push('/home');
+  // Check if user is already logged in
+  useEffect(() => {
+    checkExistingAuth();
+  }, []);
+
+  const checkExistingAuth = async () => {
+    try {
+      const token = await SecureStore.getItemAsync("access_token");
+      if (token) {
+        // User is already authenticated, redirect to chat
+        router.replace("/chat");
+      }
+    } catch (error) {
+      console.log("No existing auth found");
+    }
+  };
+
+  const handleAuth = async () => {
+    // Validation
+    if (!email || !password) {
+      Alert.alert("Error", "Please fill in all fields.");
+      return;
+    }
+
+    // Basic email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      Alert.alert("Error", "Please enter a valid email address.");
+      return;
+    }
+
+    // Password length validation
+    if (password.length < 6) {
+      Alert.alert("Error", "Password must be at least 6 characters long.");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const endpoint = isSignup
+        ? `${API_BASE_URL}/auth/signup`
+        : `${API_BASE_URL}/auth/login`;
+
+      console.log(`Attempting ${isSignup ? 'signup' : 'login'} at:`, endpoint);
+
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email: email.toLowerCase().trim(),
+          password: password,
+        }),
+      });
+
+      const data = await response.json();
+
+      setLoading(false);
+
+      // Check if request was successful
+      if (!response.ok) {
+        console.error("Auth failed:", data);
+        
+        // Handle specific error messages
+        let errorMessage = "An error occurred";
+        if (data.error) {
+          errorMessage = typeof data.error === 'string' 
+            ? data.error 
+            : data.error.message || "Authentication failed";
+        }
+        
+        Alert.alert(
+          isSignup ? "Signup Failed" : "Login Failed",
+          errorMessage
+        );
+        return;
+      }
+
+      // Success! Handle the response
+      console.log("Auth successful:", data);
+
+      // Store authentication token
+      // Supabase returns the session in data.session
+      if (data.data && data.data.session) {
+        const accessToken = data.data.session.access_token;
+        const refreshToken = data.data.session.refresh_token;
+        const userId = data.data.user.id;
+        const userEmail = data.data.user.email;
+
+        // Store tokens securely
+        await SecureStore.setItemAsync("access_token", accessToken);
+        await SecureStore.setItemAsync("refresh_token", refreshToken);
+        await SecureStore.setItemAsync("user_id", userId);
+        await SecureStore.setItemAsync("user_email", userEmail);
+
+        console.log("Tokens stored successfully");
+
+        // Show success message
+        if (isSignup) {
+          Alert.alert(
+            "Welcome!",
+            "Your account has been created successfully.",
+            [
+              {
+                text: "OK",
+                onPress: () => router.replace("/chat"),
+              },
+            ]
+          );
+        } else {
+          // For login, directly navigate to chat
+          router.replace("/chat");
+        }
+      } else if (data.data && data.data.id) {
+        // Fallback for login response that might return user directly
+        const userId = data.data.id;
+        const userEmail = data.data.email;
+
+        await SecureStore.setItemAsync("user_id", userId);
+        await SecureStore.setItemAsync("user_email", userEmail);
+        
+        // For login without explicit token, still navigate
+        router.replace("/chat");
+      } else {
+        Alert.alert("Error", "Invalid response from server");
+      }
+    } catch (error) {
+      setLoading(false);
+      console.error("Network error:", error);
+
+      Alert.alert(
+        "Connection Error",
+        "Could not connect to the server. Please check:\n\n" +
+        "1. Your internet connection\n" +
+        "2. Backend server is running on port 3001\n" +
+        "3. API_BASE_URL is correctly set"
+      );
     }
   };
 
   const handleGoBack = () => {
-  setTimeout(() => {
-    router.back();
-  }, 0);
-};
-
+    setTimeout(() => router.back(), 0);
+  };
 
   return (
     <LinearGradient colors={["#1a1a1a", "#000000"]} style={styles.container}>
@@ -67,6 +202,8 @@ const AuthScreen = () => {
           onChangeText={setEmail}
           keyboardType="email-address"
           autoCapitalize="none"
+          autoCorrect={false}
+          editable={!loading}
         />
         <TextInput
           placeholder="Password"
@@ -75,20 +212,36 @@ const AuthScreen = () => {
           value={password}
           onChangeText={setPassword}
           secureTextEntry
+          autoCapitalize="none"
+          autoCorrect={false}
+          editable={!loading}
         />
 
         {/* Button */}
-        <TouchableOpacity style={styles.primaryButton} onPress={handleAuth}>
-          <Text style={styles.primaryText}>{isSignup ? "Sign Up" : "Login"}</Text>
+        <TouchableOpacity
+          style={[styles.primaryButton, loading && styles.buttonDisabled]}
+          onPress={handleAuth}
+          disabled={loading}
+        >
+          {loading ? (
+            <ActivityIndicator color="#fff" size="small" />
+          ) : (
+            <Text style={styles.primaryText}>
+              {isSignup ? "Sign Up" : "Login"}
+            </Text>
+          )}
         </TouchableOpacity>
 
         {/* Switch */}
         <TouchableOpacity
-          onPress={() => setIsSignup(!isSignup)}
+          onPress={() => !loading && setIsSignup(!isSignup)}
           style={styles.switchWrapper}
+          disabled={loading}
         >
           <Text style={styles.switchTextNormal}>
-            {isSignup ? "Already have an account? " : "Don't have an account? "}
+            {isSignup
+              ? "Already have an account? "
+              : "Don't have an account? "}
           </Text>
           <Text style={styles.switchTextLink}>
             {isSignup ? "Login" : "Sign Up"}
@@ -113,7 +266,7 @@ const styles = StyleSheet.create({
     paddingVertical: 40,
   },
   backButton: {
-    position: 'absolute',
+    position: "absolute",
     top: 50,
     left: 25,
     zIndex: 10,
@@ -152,12 +305,17 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     borderRadius: 12,
     alignItems: "center",
+    justifyContent: "center",
     marginBottom: 15,
     shadowColor: "#ff66aa",
     shadowOpacity: 0.5,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 6 },
     elevation: 8,
+    minHeight: 52,
+  },
+  buttonDisabled: {
+    opacity: 0.6,
   },
   primaryText: {
     color: "#fff",
